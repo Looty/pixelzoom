@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    env:
+      # Keep runner paths out of the compiled binary.
+      RUSTFLAGS: >-
+        --remap-path-prefix=${{ github.workspace }}=.
+        --remap-path-prefix=C:\Users\runneradmin\.cargo=~/.cargo
+        --remap-path-prefix=C:\Users\runneradmin\.rustup=~/.rustup
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Test
+        run: cargo test
