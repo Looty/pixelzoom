@@ -9,15 +9,15 @@ use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering::Relaxed};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct2D::Common::*;
 use windows::Win32::Graphics::Direct2D::*;
-use windows::Win32::Graphics::Dwm::*;
 use windows::Win32::Graphics::DirectWrite::*;
+use windows::Win32::Graphics::Dwm::*;
+use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::Win32::Graphics::Gdi::{InvalidateRect, ValidateRect};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Registry::*;
 use windows::Win32::UI::HiDpi::{AdjustWindowRectExForDpi, GetDpiForWindow};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
 use windows::core::w;
 use windows_numerics::Vector2;
 
@@ -31,8 +31,8 @@ const WM_REC: u32 = WM_APP + 2; // wparam 0 = keys changed, 1 = recording finish
 // Logical (96 dpi) size of the client area. The screen picker adds height below
 // the base layout, and only when more than one monitor is connected.
 const CLIENT_W: f32 = 440.0;
-const BASE_H: f32 = 372.0;
-const SHOT_TOP: f32 = 408.0;
+const BASE_H: f32 = 472.0;
+const SHOT_TOP: f32 = 508.0;
 const SHOT_W: f32 = 120.0;
 const SHOT_H: f32 = 118.0;
 const SHOT_GAP_X: f32 = 16.0;
@@ -59,10 +59,13 @@ fn selected_index(mons: &[Monitor], id: &str) -> usize {
     mons.iter().position(|m| m.id == id).or_else(|| mons.iter().position(|m| m.primary)).unwrap_or(0)
 }
 
+/// The monitors plus one optional BGRA thumbnail each.
+type Previews = (Vec<Monitor>, Vec<Option<Vec<u8>>>);
+
 thread_local! {
     /// Monitors and their thumbnails, grabbed just before the window opens so the
     /// settings window itself isn't in the previews.
-    static PENDING: RefCell<Option<(Vec<Monitor>, Vec<Option<Vec<u8>>>)>> = const { RefCell::new(None) };
+    static PENDING: RefCell<Option<Previews>> = const { RefCell::new(None) };
 }
 
 // ---- recorder state (shared with the keyboard hook) ----------------------
@@ -114,25 +117,31 @@ impl R {
     }
 }
 
-const CARD: R = R::new(24.0, 76.0, 392.0, 100.0);
+const CARD: R = R::new(24.0, 76.0, 392.0, 200.0);
 const ROW1: R = R::new(24.0, 76.0, 392.0, 50.0);
 const ROW2: R = R::new(24.0, 126.0, 392.0, 50.0);
+const ROW3: R = R::new(24.0, 176.0, 392.0, 50.0);
+const ROW4: R = R::new(24.0, 226.0, 392.0, 50.0);
 const SWITCH1: R = R::new(360.0, 89.0, 44.0, 24.0);
 const SWITCH2: R = R::new(360.0, 139.0, 44.0, 24.0);
-const BTN_RECORD: R = R::new(24.0, 296.0, 110.0, 36.0);
-const BTN_CLEAR: R = R::new(144.0, 296.0, 90.0, 36.0);
+const SWITCH3: R = R::new(360.0, 189.0, 44.0, 24.0);
+const SWITCH4: R = R::new(360.0, 239.0, 44.0, 24.0);
+const BTN_RECORD: R = R::new(24.0, 396.0, 110.0, 36.0);
+const BTN_CLEAR: R = R::new(144.0, 396.0, 90.0, 36.0);
 
 const CHIP_W: f32 = 120.0;
 const CHIP_GAP: f32 = 32.0; // room for the "+" between boxes
 
 fn chip_rect(i: usize) -> R {
-    R::new(24.0 + i as f32 * (CHIP_W + CHIP_GAP), 232.0, CHIP_W, 46.0)
+    R::new(24.0 + i as f32 * (CHIP_W + CHIP_GAP), 332.0, CHIP_W, 46.0)
 }
 
 #[derive(Clone, Copy, PartialEq)]
 enum Hit {
     Enable,
     Autostart,
+    SnapZoom,
+    BgrPanel,
     Chip,
     Record,
     Clear,
@@ -140,15 +149,19 @@ enum Hit {
 }
 
 fn hit_test(x: f32, y: f32, monitor_count: usize) -> Option<Hit> {
-    if monitor_count > 1 {
-        if let Some(i) = (0..monitor_count).find(|i| screen_rect(*i).contains(x, y)) {
-            return Some(Hit::Screen(i));
-        }
+    if monitor_count > 1
+        && let Some(i) = (0..monitor_count).find(|i| screen_rect(*i).contains(x, y))
+    {
+        return Some(Hit::Screen(i));
     }
     if ROW1.contains(x, y) {
         Some(Hit::Enable)
     } else if ROW2.contains(x, y) {
         Some(Hit::Autostart)
+    } else if ROW3.contains(x, y) {
+        Some(Hit::SnapZoom)
+    } else if ROW4.contains(x, y) {
+        Some(Hit::BgrPanel)
     } else if (0..MAX_COMBO_KEYS).any(|i| chip_rect(i).contains(x, y)) {
         Some(Hit::Chip)
     } else if BTN_RECORD.contains(x, y) {
@@ -172,8 +185,10 @@ struct Theme {
     accent: u32,
 }
 
-const DARK: Theme = Theme { bg: 0x1F1F1F, card: 0x2B2B2B, border: 0x3D3D3D, text: 0xFFFFFF, sub: 0x9A9A9A, off: 0x6B6B6B, accent: 0x4A9EFF };
-const LIGHT: Theme = Theme { bg: 0xF3F3F3, card: 0xFFFFFF, border: 0xD6D6D6, text: 0x1A1A1A, sub: 0x6B6B6B, off: 0xB4B4B4, accent: 0x2F7FE6 };
+const DARK: Theme =
+    Theme { bg: 0x1F1F1F, card: 0x2B2B2B, border: 0x3D3D3D, text: 0xFFFFFF, sub: 0x9A9A9A, off: 0x6B6B6B, accent: 0x4A9EFF };
+const LIGHT: Theme =
+    Theme { bg: 0xF3F3F3, card: 0xFFFFFF, border: 0xD6D6D6, text: 0x1A1A1A, sub: 0x6B6B6B, off: 0xB4B4B4, accent: 0x2F7FE6 };
 
 fn system_is_dark() -> bool {
     unsafe {
@@ -193,12 +208,7 @@ fn system_is_dark() -> bool {
 }
 
 fn color(hex: u32, a: f32) -> D2D1_COLOR_F {
-    D2D1_COLOR_F {
-        r: ((hex >> 16) & 0xFF) as f32 / 255.0,
-        g: ((hex >> 8) & 0xFF) as f32 / 255.0,
-        b: (hex & 0xFF) as f32 / 255.0,
-        a,
-    }
+    D2D1_COLOR_F { r: ((hex >> 16) & 0xFF) as f32 / 255.0, g: ((hex >> 8) & 0xFF) as f32 / 255.0, b: (hex & 0xFF) as f32 / 255.0, a }
 }
 
 // ---- drawing resources -----------------------------------------------------
@@ -226,7 +236,8 @@ thread_local! {
 
 fn format(dw: &IDWriteFactory, weight: DWRITE_FONT_WEIGHT, size: f32) -> windows::core::Result<IDWriteTextFormat> {
     unsafe {
-        let f = dw.CreateTextFormat(w!("Segoe UI"), None, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, w!("en-us"))?;
+        let f =
+            dw.CreateTextFormat(w!("Segoe UI"), None, weight, DWRITE_FONT_STYLE_NORMAL, DWRITE_FONT_STRETCH_NORMAL, size, w!("en-us"))?;
         f.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
         Ok(f)
     }
@@ -320,10 +331,7 @@ impl Ui {
         let cx = if on { r.x + r.w - r.h / 2.0 } else { r.x + r.h / 2.0 };
         unsafe {
             self.brush.SetColor(&color(0xFFFFFF, 1.0));
-            self.rt.FillEllipse(
-                &D2D1_ELLIPSE { point: Vector2::new(cx, r.y + r.h / 2.0), radiusX: 8.0, radiusY: 8.0 },
-                &self.brush,
-            );
+            self.rt.FillEllipse(&D2D1_ELLIPSE { point: Vector2::new(cx, r.y + r.h / 2.0), radiusX: 8.0, radiusY: 8.0 }, &self.brush);
         }
     }
 
@@ -361,16 +369,22 @@ impl Ui {
         self.stroke(&CARD.inset(0.5).rounded(10.0), t.border, 1.0);
         unsafe {
             self.brush.SetColor(&color(t.border, 1.0));
-            self.rt.FillRectangle(&R::new(40.0, 126.0, 360.0, 1.0).d2d(), &self.brush);
+            for y in [126.0, 176.0, 226.0] {
+                self.rt.FillRectangle(&R::new(40.0, y, 360.0, 1.0).d2d(), &self.brush);
+            }
         }
         self.text("Enable pixelzoom", &self.body, R::new(40.0, 76.0, 300.0, 50.0), t.text);
         self.text("Start with Windows", &self.body, R::new(40.0, 126.0, 300.0, 50.0), t.text);
+        self.text("Snap to whole zoom levels", &self.body, R::new(40.0, 176.0, 300.0, 50.0), t.text);
+        self.text("BGR display (sub-pixel order)", &self.body, R::new(40.0, 226.0, 300.0, 50.0), t.text);
         self.switch(SWITCH1, ENABLED.load(Relaxed), self.hover == Some(Hit::Enable));
         self.switch(SWITCH2, self.autostart, self.hover == Some(Hit::Autostart));
+        self.switch(SWITCH3, SNAP_ZOOM.load(Relaxed), self.hover == Some(Hit::SnapZoom));
+        self.switch(SWITCH4, BGR_PANEL.load(Relaxed), self.hover == Some(Hit::BgrPanel));
 
         // Shortcut recorder.
-        self.text("Zoom shortcut", &self.body, R::new(24.0, 188.0, 392.0, 24.0), t.text);
-        self.text("A key plus a scroll direction. That direction zooms in.", &self.small, R::new(24.0, 208.0, 392.0, 20.0), t.sub);
+        self.text("Zoom shortcut", &self.body, R::new(24.0, 288.0, 392.0, 24.0), t.text);
+        self.text("A key plus a scroll direction. That direction zooms in.", &self.small, R::new(24.0, 308.0, 392.0, 20.0), t.sub);
         for i in 0..MAX_COMBO_KEYS {
             let r = chip_rect(i);
             let rr = r.rounded(8.0);
@@ -381,7 +395,13 @@ impl Ui {
                 self.fill(&rr, t.accent, 0.14);
             }
             let hot = self.hover == Some(Hit::Chip);
-            let border = if key.is_some() || waiting { t.accent } else if hot { t.sub } else { t.border };
+            let border = if key.is_some() || waiting {
+                t.accent
+            } else if hot {
+                t.sub
+            } else {
+                t.border
+            };
             self.stroke(&r.inset(1.0).rounded(8.0), border, if waiting { 2.0 } else { 1.0 });
             match key {
                 Some(k) => self.text(&vk_label(*k), &self.centered, r, t.text),
@@ -403,11 +423,11 @@ impl Ui {
         } else {
             "Click a box or Record to change it."
         };
-        self.text(status, &self.small, R::new(24.0, 342.0, 392.0, 20.0), t.sub);
+        self.text(status, &self.small, R::new(24.0, 442.0, 392.0, 20.0), t.sub);
 
         // Screen picker (only with several monitors): thumbnail, model name, resolution.
         if self.monitors.len() > 1 {
-            self.text("Screen to zoom", &self.body, R::new(24.0, 376.0, 392.0, 24.0), t.text);
+            self.text("Screen to zoom", &self.body, R::new(24.0, 476.0, 392.0, 24.0), t.text);
             let sel = selected_index(&self.monitors, &monitor_id());
             for (i, m) in self.monitors.iter().enumerate() {
                 let r = screen_rect(i);
@@ -418,7 +438,13 @@ impl Ui {
                 if chosen {
                     self.fill(&rr, t.accent, 0.14);
                 }
-                let border = if chosen { t.accent } else if hot { t.sub } else { t.border };
+                let border = if chosen {
+                    t.accent
+                } else if hot {
+                    t.sub
+                } else {
+                    t.border
+                };
                 self.stroke(&r.inset(1.0).rounded(10.0), border, if chosen { 2.0 } else { 1.0 });
                 let shot = R::new(r.x + 6.0, r.y + 6.0, r.w - 12.0, 61.0);
                 match self.thumbs.get(i).and_then(|b| b.as_ref()) {
@@ -434,10 +460,10 @@ impl Ui {
         }
 
         unsafe {
-            if let Err(e) = self.rt.EndDraw(None, None) {
-                if e.code() == D2DERR_RECREATE_TARGET {
-                    UI.with(|u| *u.borrow_mut() = None);
-                }
+            if let Err(e) = self.rt.EndDraw(None, None)
+                && e.code() == D2DERR_RECREATE_TARGET
+            {
+                UI.with(|u| *u.borrow_mut() = None);
             }
         }
     }
@@ -538,80 +564,6 @@ fn stop_listening() {
 
 // ---- window ----------------------------------------------------------------
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn mon(id: &str, primary: bool) -> Monitor {
-        Monitor { id: id.into(), name: id.into(), rect: RECT { left: 0, top: 0, right: 10, bottom: 10 }, primary }
-    }
-
-    #[test]
-    fn selection_prefers_saved_then_primary_then_first() {
-        let v = vec![mon("A", false), mon("B", true), mon("C", false)];
-        assert_eq!(selected_index(&v, "C"), 2);
-        assert_eq!(selected_index(&v, ""), 1);
-        assert_eq!(selected_index(&v, "gone"), 1);
-        let no_primary = vec![mon("A", false), mon("B", false)];
-        assert_eq!(selected_index(&no_primary, "gone"), 0);
-        assert_eq!(selected_index(&[], "x"), 0);
-    }
-
-    #[test]
-    fn window_grows_only_with_several_monitors() {
-        assert_eq!(client_h(0), BASE_H);
-        assert_eq!(client_h(1), BASE_H);
-        assert!(client_h(2) > BASE_H);
-        assert_eq!(client_h(2), client_h(3)); // one row up to three monitors
-        assert!(client_h(4) > client_h(3)); // then a second row
-    }
-
-    #[test]
-    fn screen_cards_form_a_grid_inside_the_window() {
-        for i in 0..6 {
-            let r = screen_rect(i);
-            assert!(r.x >= 24.0 && r.x + r.w <= CLIENT_W - 24.0 + 0.5, "card {i} x-range");
-            assert!(r.y + r.h <= client_h(6), "card {i} fits vertically");
-        }
-        assert_eq!(screen_rect(0).y, screen_rect(2).y);
-        assert!(screen_rect(3).y > screen_rect(0).y);
-        assert_eq!(screen_rect(3).x, screen_rect(0).x);
-    }
-
-    #[test]
-    fn hit_testing_finds_controls() {
-        assert!(matches!(hit_test(100.0, 100.0, 1), Some(Hit::Enable)));
-        assert!(matches!(hit_test(100.0, 150.0, 1), Some(Hit::Autostart)));
-        assert!(matches!(hit_test(chip_rect(0).x + 5.0, chip_rect(0).y + 5.0, 1), Some(Hit::Chip)));
-        assert!(matches!(hit_test(BTN_RECORD.x + 5.0, BTN_RECORD.y + 5.0, 1), Some(Hit::Record)));
-        assert!(matches!(hit_test(BTN_CLEAR.x + 5.0, BTN_CLEAR.y + 5.0, 1), Some(Hit::Clear)));
-        assert!(hit_test(5.0, 5.0, 1).is_none());
-    }
-
-    #[test]
-    fn screen_cards_only_hit_with_several_monitors() {
-        let (x, y) = (screen_rect(1).x + 5.0, screen_rect(1).y + 5.0);
-        assert!(hit_test(x, y, 1).is_none());
-        assert!(matches!(hit_test(x, y, 3), Some(Hit::Screen(1))));
-        assert!(hit_test(x, y, 1).is_none());
-    }
-
-    #[test]
-    fn rect_helpers() {
-        let r = R::new(10.0, 20.0, 30.0, 40.0);
-        assert!(r.contains(10.0, 20.0) && r.contains(39.9, 59.9));
-        assert!(!r.contains(40.0, 20.0) && !r.contains(9.9, 30.0));
-        let i = r.inset(5.0);
-        assert_eq!((i.x, i.y, i.w, i.h), (15.0, 25.0, 20.0, 30.0));
-    }
-
-    #[test]
-    fn colors_split_into_channels() {
-        let c = color(0xFF8000, 0.5);
-        assert!((c.r - 1.0).abs() < 1e-6 && (c.g - 128.0 / 255.0).abs() < 1e-6 && c.b == 0.0 && c.a == 0.5);
-    }
-}
-
 /// Show the settings window (create it the first time).
 pub fn open() {
     unsafe {
@@ -641,7 +593,8 @@ pub fn open() {
         };
         RegisterClassExW(&wc);
         let style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU;
-        let Ok(h) = CreateWindowExW(WINDOW_EX_STYLE(0), class, w!("Pixel Zoom"), style, 0, 0, 100, 100, None, None, Some(hinst), None) else {
+        let Ok(h) = CreateWindowExW(WINDOW_EX_STYLE(0), class, w!("Pixel Zoom"), style, 0, 0, 100, 100, None, None, Some(hinst), None)
+        else {
             return;
         };
         WIN.store(h.0 as isize, Relaxed);
@@ -710,7 +663,12 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         }
                         if !ui.tracking {
                             ui.tracking = true;
-                            let mut t = TRACKMOUSEEVENT { cbSize: size_of::<TRACKMOUSEEVENT>() as u32, dwFlags: TME_LEAVE, hwndTrack: hwnd, dwHoverTime: 0 };
+                            let mut t = TRACKMOUSEEVENT {
+                                cbSize: size_of::<TRACKMOUSEEVENT>() as u32,
+                                dwFlags: TME_LEAVE,
+                                hwndTrack: hwnd,
+                                dwHoverTime: 0,
+                            };
                             let _ = TrackMouseEvent(&mut t);
                         }
                     }
@@ -765,6 +723,14 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                             }
                         });
                     }
+                    Some(Hit::SnapZoom) => {
+                        SNAP_ZOOM.store(!SNAP_ZOOM.load(Relaxed), Relaxed);
+                        save();
+                    }
+                    Some(Hit::BgrPanel) => {
+                        BGR_PANEL.store(!BGR_PANEL.load(Relaxed), Relaxed);
+                        save();
+                    }
                     Some(Hit::Chip) | Some(Hit::Record) => start_listening(hwnd),
                     Some(Hit::Clear) => {
                         set_combo(&[]);
@@ -809,5 +775,81 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
             }
             _ => DefWindowProcW(hwnd, msg, wparam, lparam),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mon(id: &str, primary: bool) -> Monitor {
+        Monitor { id: id.into(), name: id.into(), rect: RECT { left: 0, top: 0, right: 10, bottom: 10 }, primary }
+    }
+
+    #[test]
+    fn selection_prefers_saved_then_primary_then_first() {
+        let v = vec![mon("A", false), mon("B", true), mon("C", false)];
+        assert_eq!(selected_index(&v, "C"), 2);
+        assert_eq!(selected_index(&v, ""), 1);
+        assert_eq!(selected_index(&v, "gone"), 1);
+        let no_primary = vec![mon("A", false), mon("B", false)];
+        assert_eq!(selected_index(&no_primary, "gone"), 0);
+        assert_eq!(selected_index(&[], "x"), 0);
+    }
+
+    #[test]
+    fn window_grows_only_with_several_monitors() {
+        assert_eq!(client_h(0), BASE_H);
+        assert_eq!(client_h(1), BASE_H);
+        assert!(client_h(2) > BASE_H);
+        assert_eq!(client_h(2), client_h(3)); // one row up to three monitors
+        assert!(client_h(4) > client_h(3)); // then a second row
+    }
+
+    #[test]
+    fn screen_cards_form_a_grid_inside_the_window() {
+        for i in 0..6 {
+            let r = screen_rect(i);
+            assert!(r.x >= 24.0 && r.x + r.w <= CLIENT_W - 24.0 + 0.5, "card {i} x-range");
+            assert!(r.y + r.h <= client_h(6), "card {i} fits vertically");
+        }
+        assert_eq!(screen_rect(0).y, screen_rect(2).y);
+        assert!(screen_rect(3).y > screen_rect(0).y);
+        assert_eq!(screen_rect(3).x, screen_rect(0).x);
+    }
+
+    #[test]
+    fn hit_testing_finds_controls() {
+        assert!(matches!(hit_test(100.0, 100.0, 1), Some(Hit::Enable)));
+        assert!(matches!(hit_test(100.0, 150.0, 1), Some(Hit::Autostart)));
+        assert!(matches!(hit_test(100.0, 200.0, 1), Some(Hit::SnapZoom)));
+        assert!(matches!(hit_test(100.0, 250.0, 1), Some(Hit::BgrPanel)));
+        assert!(matches!(hit_test(chip_rect(0).x + 5.0, chip_rect(0).y + 5.0, 1), Some(Hit::Chip)));
+        assert!(matches!(hit_test(BTN_RECORD.x + 5.0, BTN_RECORD.y + 5.0, 1), Some(Hit::Record)));
+        assert!(matches!(hit_test(BTN_CLEAR.x + 5.0, BTN_CLEAR.y + 5.0, 1), Some(Hit::Clear)));
+        assert!(hit_test(5.0, 5.0, 1).is_none());
+    }
+
+    #[test]
+    fn screen_cards_only_hit_with_several_monitors() {
+        let (x, y) = (screen_rect(1).x + 5.0, screen_rect(1).y + 5.0);
+        assert!(hit_test(x, y, 1).is_none());
+        assert!(matches!(hit_test(x, y, 3), Some(Hit::Screen(1))));
+        assert!(hit_test(x, y, 1).is_none());
+    }
+
+    #[test]
+    fn rect_helpers() {
+        let r = R::new(10.0, 20.0, 30.0, 40.0);
+        assert!(r.contains(10.0, 20.0) && r.contains(39.9, 59.9));
+        assert!(!r.contains(40.0, 20.0) && !r.contains(9.9, 30.0));
+        let i = r.inset(5.0);
+        assert_eq!((i.x, i.y, i.w, i.h), (15.0, 25.0, 20.0, 30.0));
+    }
+
+    #[test]
+    fn colors_split_into_channels() {
+        let c = color(0xFF8000, 0.5);
+        assert!((c.r - 1.0).abs() < 1e-6 && (c.g - 128.0 / 255.0).abs() < 1e-6 && c.b == 0.0 && c.a == 0.5);
     }
 }

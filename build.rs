@@ -32,7 +32,7 @@ fn make_ico() -> Vec<u8> {
                 }
             }
             let mask_row = ((s + 31) / 32 * 4) as usize;
-            img.extend(std::iter::repeat(0u8).take(mask_row * s as usize));
+            img.extend(std::iter::repeat_n(0u8, mask_row * s as usize));
             img
         })
         .collect();

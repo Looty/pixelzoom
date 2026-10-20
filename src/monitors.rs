@@ -104,9 +104,7 @@ fn friendly_names() -> Vec<(String, String)> {
             tgt.header.size = size_of::<DISPLAYCONFIG_TARGET_DEVICE_NAME>() as u32;
             tgt.header.adapterId = p.targetInfo.adapterId;
             tgt.header.id = p.targetInfo.id;
-            if DisplayConfigGetDeviceInfo(&mut src.header as *mut _ as *mut DISPLAYCONFIG_DEVICE_INFO_HEADER) == 0
-                && DisplayConfigGetDeviceInfo(&mut tgt.header as *mut _ as *mut DISPLAYCONFIG_DEVICE_INFO_HEADER) == 0
-            {
+            if DisplayConfigGetDeviceInfo(&mut src.header) == 0 && DisplayConfigGetDeviceInfo(&mut tgt.header) == 0 {
                 result.push((utf16_to_string(&src.viewGdiDeviceName), utf16_to_string(&tgt.monitorFriendlyDeviceName)));
             }
         }
@@ -152,7 +150,7 @@ pub fn thumbnail(m: &Monitor, w: i32, h: i32) -> Option<Vec<u8>> {
         let _ = DeleteDC(mem);
         ReleaseDC(None, screen);
         result.map(|mut px| {
-            for a in px.chunks_exact_mut(4) {
+            for a in px.as_chunks_mut::<4>().0 {
                 a[3] = 255; // GDI leaves alpha undefined
             }
             px

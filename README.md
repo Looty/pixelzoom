@@ -30,18 +30,20 @@ Get-FileHash .\pixelzoom-<version>-windows-x64.zip -Algorithm SHA256
 
 - Enable or disable Pixel Zoom.
 - Start with Windows.
+- Snap to whole zoom levels: scrolling stops on exact 2x, 3x, 4x… (on by default). Turn it off for smooth, unstopped steps.
+- BGR display: turn on if your panel's sub-pixels run blue-green-red (rare). It fixes ClearType text sharpening on those panels.
 - Shortcut recorder: click a key box or Record, hold a key and scroll up or down, then release. The direction you record zooms in; the other zooms out. A key is required; Clear wipes it and listens again.
 - Screen picker, shown when several monitors are connected.
 - Settings are stored in `%APPDATA%\pixelzoom\config.ini`.
 
 ## How it works
 
-The screen is captured with desktop duplication and scaled on the GPU with Lanczos3 filtering and ClearType-aware adaptive sharpening, so text stays crisp. HDR content is passed through unchanged. When you are not zooming, the idle cost is effectively zero.
+The screen is captured with desktop duplication and scaled on the GPU with Lanczos3 filtering and ClearType-aware adaptive sharpening, so text stays crisp. Zoom levels stick to whole ratios (2x, 3x, 4x…) as you scroll, where every screen pixel becomes an exact block with no filtering; one more notch moves off it. HDR content is passed through unchanged. When you are not zooming, the idle cost is effectively zero.
 
 ## Known limitations
 
 - While enabled, the chosen modifier + scroll is swallowed in other apps, which breaks their own Ctrl+scroll zoom (browsers, editors). Pick another modifier or disable Pixel Zoom.
-- ClearType sharpening assumes RGB-order sub-pixel text rendering, the Windows default.
+- ClearType sharpening assumes RGB-order sub-pixels, the Windows default. Use the BGR display setting for the rare BGR panel.
 - Protected content and exclusive-fullscreen applications cannot be captured.
 - The executable is unsigned (see SmartScreen above).
 
@@ -54,6 +56,8 @@ cargo build --release
 ```
 
 The executable is `target\release\pixelzoom.exe`. Run it from a terminal to see log output.
+
+`cargo run --bin compare` is a developer tool that scores the zoom shader against native text renders (needs a GPU; not part of the release).
 
 ## License
 

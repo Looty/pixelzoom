@@ -79,12 +79,7 @@ pub fn make_icon(size: i32) -> HICON {
 }
 
 fn notify_data(hwnd: HWND) -> NOTIFYICONDATAW {
-    NOTIFYICONDATAW {
-        cbSize: size_of::<NOTIFYICONDATAW>() as u32,
-        hWnd: hwnd,
-        uID: ICON_ID,
-        ..Default::default()
-    }
+    NOTIFYICONDATAW { cbSize: size_of::<NOTIFYICONDATAW>() as u32, hWnd: hwnd, uID: ICON_ID, ..Default::default() }
 }
 
 pub fn add_icon(hwnd: HWND) {
@@ -123,20 +118,7 @@ pub fn create_window() -> windows::core::Result<HWND> {
         };
         RegisterClassExW(&wc);
         TASKBAR_CREATED.store(RegisterWindowMessageW(w!("TaskbarCreated")), Relaxed);
-        CreateWindowExW(
-            WS_EX_TOOLWINDOW,
-            class,
-            w!("pixelzoom tray"),
-            WS_POPUP,
-            0,
-            0,
-            0,
-            0,
-            None,
-            None,
-            Some(hinst),
-            None,
-        )
+        CreateWindowExW(WS_EX_TOOLWINDOW, class, w!("pixelzoom tray"), WS_POPUP, 0, 0, 0, 0, None, None, Some(hinst), None)
     }
 }
 
@@ -187,8 +169,7 @@ unsafe extern "system" fn tray_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam
         // Resolution / HDR / monitor changes and resume from sleep invalidate GPU state.
         const PBT_APMRESUMESUSPEND: usize = 0x7;
         const PBT_APMRESUMEAUTOMATIC: usize = 0x12;
-        if msg == WM_DISPLAYCHANGE
-            || (msg == WM_POWERBROADCAST && (wparam.0 == PBT_APMRESUMESUSPEND || wparam.0 == PBT_APMRESUMEAUTOMATIC))
+        if msg == WM_DISPLAYCHANGE || (msg == WM_POWERBROADCAST && (wparam.0 == PBT_APMRESUMESUSPEND || wparam.0 == PBT_APMRESUMEAUTOMATIC))
         {
             crate::DISPLAY_DIRTY.store(true, Relaxed);
         }

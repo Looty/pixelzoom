@@ -11,6 +11,7 @@ mod monitors;
 mod settings;
 mod tray;
 mod ui;
+mod zoom;
 
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
@@ -22,8 +23,8 @@ use windows::Win32::Graphics::Direct3D::*;
 use windows::Win32::Graphics::Direct3D11::*;
 use windows::Win32::Graphics::Dxgi::Common::*;
 use windows::Win32::Graphics::Dxgi::*;
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::{CreateMutexW, GetCurrentThreadId};
 use windows::Win32::UI::HiDpi::*;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
@@ -31,6 +32,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{Interface, PCSTR, w};
 
 use settings::*;
+use zoom::step_zoom;
 
 const SHADER: &str = include_str!("shader.hlsl");
 const EASE_RATE: f32 = 32.0; // higher = snappier zoom animation
@@ -41,16 +43,6 @@ static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
 static SEL_RECT: [AtomicI32; 4] = [AtomicI32::new(0), AtomicI32::new(0), AtomicI32::new(i32::MAX), AtomicI32::new(i32::MAX)];
 /// Set when the display setup changed (resolution, HDR, monitors, resume): rebuild GPU state.
 pub(crate) static DISPLAY_DIRTY: AtomicBool = AtomicBool::new(false);
-
-/// New zoom target after `notches` wheel notches (or keyboard steps).
-fn step_zoom_with(t: f32, notches: f32, step: f32, max: f32) -> f32 {
-    let z = (t * step.powf(notches)).clamp(1.0, max);
-    if z < 1.02 { 1.0 } else { z }
-}
-
-fn step_zoom(t: f32, notches: f32) -> f32 {
-    step_zoom_with(t, notches, getf(&ZOOM_STEP), getf(&MAX_ZOOM))
-}
 
 fn point_in_sel_rect(x: i32, y: i32) -> bool {
     x >= SEL_RECT[0].load(Ordering::Relaxed)
@@ -75,14 +67,7 @@ fn combo_down() -> bool {
     let down = |vk: i32| unsafe { GetAsyncKeyState(vk) < 0 };
     // Wheel pseudo-keys only pick the zoom direction; they are never "held".
     let keys: Vec<u32> = combo().into_iter().filter(|k| !is_wheel(*k)).collect();
-    !keys.is_empty()
-        && keys.iter().all(|&k| {
-            if k == K_WIN {
-                down(0x5B) || down(0x5C)
-            } else {
-                down(k as i32)
-            }
-        })
+    !keys.is_empty() && keys.iter().all(|&k| if k == K_WIN { down(0x5B) || down(0x5C) } else { down(k as i32) })
 }
 
 #[repr(C)]
@@ -93,6 +78,9 @@ struct CB {
     mode: u32,
     sharpen: f32,
     smode: u32,
+    /// Bit 0: BGR sub-pixel order. Padded to a whole 16-byte constant-buffer row.
+    flags: u32,
+    _pad: [u32; 3],
 }
 
 /// GPU objects that live as long as the process.
@@ -498,24 +486,18 @@ fn draw(g: &Gfx, cap: &Capture, zoom: f32, probe: bool) -> windows::core::Result
         let cb = CB {
             // Relative to the zoomed monitor and kept on it, so the view stays valid
             // even while the pointer is over another screen.
-            cursor: [
-                ((pt.x - g.origin.0) as f32).clamp(0.0, g.w as f32),
-                ((pt.y - g.origin.1) as f32).clamp(0.0, g.h as f32),
-            ],
+            cursor: [((pt.x - g.origin.0) as f32).clamp(0.0, g.w as f32), ((pt.y - g.origin.1) as f32).clamp(0.0, g.h as f32)],
             size: [g.w as f32, g.h as f32],
             zoom,
             mode: FILTER.load(Ordering::Relaxed),
             sharpen: getf(&STRENGTH),
             smode: SHARPEN.load(Ordering::Relaxed),
+            flags: BGR_PANEL.load(Ordering::Relaxed) as u32,
+            _pad: [0; 3],
         };
         g.ctx.UpdateSubresource(&g.cb, 0, None, &cb as *const _ as *const _, 0, 0);
         g.ctx.OMSetRenderTargets(Some(&[Some(g.rtv.clone())]), None);
-        g.ctx.RSSetViewports(Some(&[D3D11_VIEWPORT {
-            Width: g.w as f32,
-            Height: g.h as f32,
-            MaxDepth: 1.0,
-            ..Default::default()
-        }]));
+        g.ctx.RSSetViewports(Some(&[D3D11_VIEWPORT { Width: g.w as f32, Height: g.h as f32, MaxDepth: 1.0, ..Default::default() }]));
         g.ctx.IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         g.ctx.VSSetShader(&g.vs, None);
         g.ctx.PSSetShader(&g.ps, None);
@@ -526,46 +508,9 @@ fn draw(g: &Gfx, cap: &Capture, zoom: f32, probe: bool) -> windows::core::Result
         if probe {
             let back: ID3D11Texture2D = g.swap.GetBuffer(0)?;
             let (x, y) = (g.w / 2, g.h / 2);
-            println!(
-                "probe center: desktop {:?} backbuffer {:?}",
-                probe_px(g, &cap.desktop, x, y)?,
-                probe_px(g, &back, x, y)?
-            );
+            println!("probe center: desktop {:?} backbuffer {:?}", probe_px(g, &cap.desktop, x, y)?, probe_px(g, &back, x, y)?);
         }
         g.swap.Present(1, DXGI_PRESENT(0)).ok()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn zoom_steps_multiply_per_notch() {
-        let z = step_zoom_with(1.0, 1.0, 1.12, 16.0);
-        assert!((z - 1.12).abs() < 1e-6);
-        let z = step_zoom_with(2.0, 2.0, 1.12, 16.0);
-        assert!((z - 2.0 * 1.12 * 1.12).abs() < 1e-5);
-    }
-
-    #[test]
-    fn zoom_is_clamped_to_the_maximum() {
-        assert_eq!(step_zoom_with(15.9, 5.0, 1.12, 16.0), 16.0);
-        assert_eq!(step_zoom_with(4.0, 50.0, 1.12, 4.0), 4.0);
-    }
-
-    #[test]
-    fn zooming_out_snaps_back_to_exactly_one() {
-        assert_eq!(step_zoom_with(1.05, -1.0, 1.12, 16.0), 1.0);
-        assert_eq!(step_zoom_with(1.0, -3.0, 1.12, 16.0), 1.0);
-        // Just above the snap threshold stays zoomed.
-        assert!(step_zoom_with(1.2, -1.0, 1.12, 16.0) > 1.02);
-    }
-
-    #[test]
-    fn fractional_notches_from_touchpads_work() {
-        let z = step_zoom_with(1.0, 0.25, 1.12, 16.0);
-        assert!(z > 1.0 && z < 1.12);
     }
 }
 
@@ -675,8 +620,8 @@ fn main() -> windows::core::Result<()> {
         'outer: loop {
             // Display setup changed (resolution, HDR, monitors, resume) or another
             // monitor was picked: drop everything and rebuild for the new state.
-            let stale = DISPLAY_DIRTY.load(Ordering::Relaxed)
-                || gfx.as_ref().is_some_and(|g| g.generation != MONITOR_GEN.load(Ordering::Relaxed));
+            let stale =
+                DISPLAY_DIRTY.load(Ordering::Relaxed) || gfx.as_ref().is_some_and(|g| g.generation != MONITOR_GEN.load(Ordering::Relaxed));
             if stale || (gfx.is_none() && Instant::now() >= next_retry) {
                 DISPLAY_DIRTY.store(false, Ordering::Relaxed);
                 leave_zoom(&mut zoom, &mut shown, &gfx);
@@ -690,7 +635,12 @@ fn main() -> windows::core::Result<()> {
             let got = if active {
                 PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool()
             } else {
-                GetMessageW(&mut msg, None, 0, 0).0 > 0
+                // GetMessage returns 0 for WM_QUIT (the tray's Exit) instead of
+                // handing it over, so it has to end the loop here.
+                match GetMessageW(&mut msg, None, 0, 0).0 {
+                    0 => break 'outer,
+                    r => r > 0,
+                }
             };
             if got {
                 match msg.message {
@@ -773,17 +723,23 @@ fn main() -> windows::core::Result<()> {
             }
             errors = 0;
             if !shown {
-                let _ = SetWindowPos(g.overlay.hwnd, Some(HWND_TOPMOST), g.origin.0, g.origin.1, g.w as i32, g.h as i32, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+                let _ = SetWindowPos(
+                    g.overlay.hwnd,
+                    Some(HWND_TOPMOST),
+                    g.origin.0,
+                    g.origin.1,
+                    g.w as i32,
+                    g.h as i32,
+                    SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                );
                 shown = true;
                 println!("overlay shown");
             }
             frames += 1;
             frame_time += t0.elapsed();
 
-            if selftest && test_start.elapsed() > Duration::from_millis(1500) {
-                if target() > 1.0 {
-                    set_target(1.0);
-                }
+            if selftest && test_start.elapsed() > Duration::from_millis(1500) && target() > 1.0 {
+                set_target(1.0);
             }
         }
 
@@ -800,5 +756,25 @@ fn main() -> windows::core::Result<()> {
             );
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn constant_buffer_is_whole_rows() {
+        assert_eq!(size_of::<CB>() % 16, 0);
+    }
+
+    // The HLSL is only compiled at runtime, so a typo would otherwise first
+    // show up as an app that cannot start. Compile both entry points here.
+    #[test]
+    fn shader_entry_points_compile() {
+        for (entry, target) in [("vs_main", "vs_5_0"), ("ps_main", "ps_5_0")] {
+            let bytes = compile_uncached(entry, target).unwrap_or_else(|e| panic!("{entry} ({target}) failed to compile: {e}"));
+            assert!(!bytes.is_empty(), "{entry} produced no bytecode");
+        }
     }
 }

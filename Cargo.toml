@@ -2,12 +2,21 @@
 name = "pixelzoom"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.88" # let-chains, slice::as_chunks
 description = "Lightweight Windows screen magnifier: Ctrl+scroll zoom with GPU Lanczos3 scaling, ClearType-aware sharpening and HDR support"
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/Looty/pixelzoom"
 keywords = ["windows", "zoom", "magnifier", "accessibility", "tray"]
 categories = ["accessibility", "graphics"]
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+
+[lints.clippy]
+dbg_macro = "warn"
+todo = "warn"
+unimplemented = "warn"
 
 [profile.release]
 opt-level = 3

@@ -1,3 +1,5 @@
 /target
+# Output of `cargo run --bin compare`
+/compare_out
 # Local-only build config (machine-specific path remaps, see .cargo/config.toml)
 /.cargo/config.toml

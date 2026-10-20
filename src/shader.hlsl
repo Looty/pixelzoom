@@ -9,6 +9,7 @@ cbuffer CB : register(b0)
     uint mode;     // 0 nearest, 1 bilinear, 2 catmull-rom, 3 lanczos3, 4 sharp-bilinear
     float sharpen; // strength
     uint smode;    // 0 off, 1 unsharp, 2 adaptive edge snap
+    uint flags;    // bit 0: panel sub-pixels run B,G,R instead of R,G,B
 };
 
 struct VSOut { float4 pos : SV_Position; };
@@ -101,13 +102,14 @@ float4 filter_at(float2 r)
     return sharp_bilinear(r);
 }
 
-// One sub-pixel sample: k indexes R,G,B,R,G,B... across a row (RGB panel order).
+// One sub-pixel sample: k indexes R,G,B,R,G,B... across a row (B,G,R,... on a BGR panel).
 float sub_at(int k, int y)
 {
     int2 sz = int2(size);
     k = clamp(k, 0, 3 * sz.x - 1);
     int px = k / 3;
     int ch = k - px * 3;
+    if (flags & 1) ch = 2 - ch;
     float3 c = tex.Load(int3(px, clamp(y, 0, sz.y - 1), 0)).rgb;
     return ch == 0 ? c.r : (ch == 1 ? c.g : c.b);
 }
@@ -152,6 +154,43 @@ float4 ps_main(VSOut i) : SV_Target
     // Proportional-follow transform: the real cursor always sits over the
     // content it would click, so no input remapping is needed.
     float2 r = cursor + (i.pos.xy - cursor) / zoom;
+    // Whole-number zoom: the cursor is an integer pixel, so every source pixel
+    // maps to an exact N x N block. Draw the blocks as they are, no filtering.
+    float whole = round(zoom);
+    if (whole >= 2.0 && abs(zoom - whole) < 0.005)
+    {
+        int2 maxp = int2(size) - 1;
+        int2 p = clamp(int2(floor(r)), int2(0, 0), maxp);
+        float3 blk = tex.Load(int3(p, 0)).rgb;
+        if (fmod(whole, 3.0) < 0.5)
+        {
+            // Multiples of 3: each output column lines up with exactly one
+            // sub-pixel (R, G or B) of a source pixel, so ClearType text is
+            // shown at its true 3x horizontal resolution, as grey. Only where
+            // the neighbourhood is neutral (text-like); coloured content keeps
+            // its colour blocks.
+            float lmn = 1e9, lmx = -1e9;
+            float3 cmn = 0, cmx = 0;
+            [unroll] for (int j = -1; j <= 1; j++)
+            {
+                [unroll] for (int i2 = -1; i2 <= 1; i2++)
+                {
+                    float3 sc = tex.Load(int3(clamp(p + int2(i2, j), int2(0, 0), maxp), 0)).rgb;
+                    float l = dot(sc, float3(0.2126, 0.7152, 0.0722));
+                    if (l < lmn) { lmn = l; cmn = sc; }
+                    if (l > lmx) { lmx = l; cmx = sc; }
+                }
+            }
+            // Absolute channel spread, not relative saturation: the dark ink pixel
+            // of black text is tinted by sub-pixel fringes (high relative
+            // saturation) but stays far less spread than real coloured text.
+            float spread = max(max(cmn.r, max(cmn.g, cmn.b)) - min(cmn.r, min(cmn.g, cmn.b)),
+                               max(cmx.r, max(cmx.g, cmx.b)) - min(cmx.r, min(cmx.g, cmx.b)));
+            float neutral = 1.0 - smoothstep(0.35, 0.70, spread);
+            blk = lerp(blk, sub_at((int)floor(r.x * 3.0), p.y).xxx, neutral);
+        }
+        return float4(max(blk, 0.0), 1.0);
+    }
     float4 c = filter_at(r);
     if (smode >= 2)
     {

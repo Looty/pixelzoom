@@ -96,7 +96,7 @@ mod tests {
     #[test]
     fn pixels_are_premultiplied() {
         let buf = icon_pixels(32);
-        for p in buf.chunks_exact(4) {
+        for p in buf.as_chunks::<4>().0 {
             assert!(p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3], "{p:?}");
         }
     }

@@ -26,6 +26,10 @@ pub static COMBO: [AtomicU32; MAX_COMBO_KEYS] = [AtomicU32::new(K_CONTROL), Atom
 pub static ZOOM_STEP: AtomicU32 = AtomicU32::new(1.12f32.to_bits());
 pub static MAX_ZOOM: AtomicU32 = AtomicU32::new(16.0f32.to_bits());
 pub static ENABLED: AtomicBool = AtomicBool::new(true);
+/// Zoom levels stick to whole ratios (2x, 3x…) where the shader draws exact blocks.
+pub static SNAP_ZOOM: AtomicBool = AtomicBool::new(true);
+/// Panel sub-pixels run B,G,R left to right instead of the usual R,G,B.
+pub static BGR_PANEL: AtomicBool = AtomicBool::new(false);
 
 pub fn getf(a: &AtomicU32) -> f32 {
     f32::from_bits(a.load(Relaxed))
@@ -82,10 +86,7 @@ pub fn vk_label(vk: u32) -> String {
 
 fn parse_vk(s: &str) -> Option<u32> {
     let s = s.trim();
-    [K_WHEEL_UP, K_WHEEL_DOWN]
-        .into_iter()
-        .chain((1..=0xFE).map(normalize_vk))
-        .find(|vk| vk_label(*vk).eq_ignore_ascii_case(s))
+    [K_WHEEL_UP, K_WHEEL_DOWN].into_iter().chain((1..=0xFE).map(normalize_vk)).find(|vk| vk_label(*vk).eq_ignore_ascii_case(s))
 }
 
 fn parse_combo(s: &str) -> Vec<u32> {
@@ -104,6 +105,8 @@ pub struct Parsed {
     pub shortcut: Option<Vec<u32>>,
     pub enabled: Option<bool>,
     pub monitor: Option<String>,
+    pub snap_zoom: Option<bool>,
+    pub bgr_panel: Option<bool>,
 }
 
 pub fn parse_config(text: &str) -> Parsed {
@@ -124,15 +127,20 @@ pub fn parse_config(text: &str) -> Parsed {
             }
             "enabled" => p.enabled = Some(v != "0"),
             "monitor" => p.monitor = Some(v.to_string()),
+            "snap_zoom" => p.snap_zoom = Some(v != "0"),
+            "bgr_panel" => p.bgr_panel = Some(v != "0"),
             _ => {}
         }
     }
     p
 }
 
-pub fn format_config(shortcut: &[u32], enabled: bool, monitor: &str) -> String {
+pub fn format_config(shortcut: &[u32], enabled: bool, monitor: &str, snap_zoom: bool, bgr_panel: bool) -> String {
     let shortcut = shortcut.iter().map(|v| vk_label(*v)).collect::<Vec<_>>().join("+");
-    format!("shortcut={shortcut}\nenabled={}\nmonitor={monitor}\n", enabled as u8)
+    format!(
+        "shortcut={shortcut}\nenabled={}\nmonitor={monitor}\nsnap_zoom={}\nbgr_panel={}\n",
+        enabled as u8, snap_zoom as u8, bgr_panel as u8
+    )
 }
 
 /// True when this key list says scroll *down* zooms in.
@@ -155,6 +163,14 @@ pub fn set_monitor(id: &str) {
 }
 
 pub fn load() {
+    // Dev switches for A/B-ing the look without rebuilding. Debug builds only,
+    // so a released exe has no hidden knobs.
+    #[cfg(debug_assertions)]
+    for (var, slot) in [("PIXELZOOM_FILTER", &FILTER), ("PIXELZOOM_SMODE", &SHARPEN)] {
+        if let Some(v) = std::env::var(var).ok().and_then(|v| v.parse::<u32>().ok()) {
+            slot.store(v, Relaxed);
+        }
+    }
     let Ok(text) = fs::read_to_string(config_path()) else { return };
     let p = parse_config(&text);
     if let Some(keys) = p.shortcut {
@@ -166,6 +182,12 @@ pub fn load() {
     if let Some(m) = p.monitor {
         set_monitor(&m);
     }
+    if let Some(on) = p.snap_zoom {
+        SNAP_ZOOM.store(on, Relaxed);
+    }
+    if let Some(on) = p.bgr_panel {
+        BGR_PANEL.store(on, Relaxed);
+    }
 }
 
 pub fn save() {
@@ -173,7 +195,7 @@ pub fn save() {
     if let Some(dir) = path.parent() {
         let _ = fs::create_dir_all(dir);
     }
-    let text = format_config(&combo(), ENABLED.load(Relaxed), &monitor_id());
+    let text = format_config(&combo(), ENABLED.load(Relaxed), &monitor_id(), SNAP_ZOOM.load(Relaxed), BGR_PANEL.load(Relaxed));
     let _ = fs::write(path, text);
 }
 
@@ -236,7 +258,7 @@ mod tests {
     fn wheel_pseudo_keys_are_not_real_vk_codes() {
         assert!(is_wheel(K_WHEEL_UP) && is_wheel(K_WHEEL_DOWN));
         assert!(!is_wheel(K_CONTROL));
-        assert!(K_WHEEL_UP > 0xFF && K_WHEEL_DOWN > 0xFF);
+        const { assert!(K_WHEEL_UP > 0xFF && K_WHEEL_DOWN > 0xFF) };
     }
 
     #[test]
@@ -248,17 +270,25 @@ mod tests {
 
     #[test]
     fn config_round_trips() {
-        let text = format_config(&[K_CONTROL, K_WHEEL_DOWN], false, r"\\.\DISPLAY2");
+        let text = format_config(&[K_CONTROL, K_WHEEL_DOWN], false, r"\\.\DISPLAY2", false, true);
         let p = parse_config(&text);
         assert_eq!(p.shortcut, Some(vec![K_CONTROL, K_WHEEL_DOWN]));
         assert_eq!(p.enabled, Some(false));
         assert_eq!(p.monitor.as_deref(), Some(r"\\.\DISPLAY2"));
+        assert_eq!(p.snap_zoom, Some(false));
+        assert_eq!(p.bgr_panel, Some(true));
+    }
+
+    #[test]
+    fn old_config_without_the_new_keys_keeps_defaults() {
+        let p = parse_config("shortcut=Ctrl+Scroll ↑\nenabled=1\n");
+        assert_eq!((p.snap_zoom, p.bgr_panel), (None, None));
     }
 
     #[test]
     fn config_ignores_comments_blank_lines_and_unknown_keys() {
         let p = parse_config("# comment\n; also comment\n\nfoo=bar\nenabled=1\nno equals sign\n");
-        assert_eq!(p, Parsed { shortcut: None, enabled: Some(true), monitor: None });
+        assert_eq!(p, Parsed { shortcut: None, enabled: Some(true), ..Default::default() });
     }
 
     #[test]
@@ -269,7 +299,7 @@ mod tests {
 
     #[test]
     fn empty_monitor_means_primary() {
-        let p = parse_config(&format_config(&[K_CONTROL], true, ""));
+        let p = parse_config(&format_config(&[K_CONTROL], true, "", true, false));
         assert_eq!(p.monitor.as_deref(), Some(""));
     }
 
