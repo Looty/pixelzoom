@@ -1,6 +1,6 @@
 [package]
 name = "pixelzoom"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.88" # let-chains, slice::as_chunks
 description = "Lightweight Windows screen magnifier: Ctrl+scroll zoom with GPU Lanczos3 scaling, ClearType-aware sharpening and HDR support"
