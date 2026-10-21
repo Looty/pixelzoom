@@ -186,8 +186,11 @@ float4 ps_main(VSOut i) : SV_Target
             // saturation) but stays far less spread than real coloured text.
             float spread = max(max(cmn.r, max(cmn.g, cmn.b)) - min(cmn.r, min(cmn.g, cmn.b)),
                                max(cmx.r, max(cmx.g, cmx.b)) - min(cmx.r, min(cmx.g, cmx.b)));
-            float neutral = 1.0 - smoothstep(0.35, 0.70, spread);
-            blk = lerp(blk, sub_at((int)floor(r.x * 3.0), p.y).xxx, neutral);
+            float neutral = 1.0 - smoothstep(0.12, 0.30, spread);
+            // Flat or low-contrast areas aren't text: the per-channel sub-pixel
+            // values of a plain colour would show as grey stripes. Keep the block.
+            neutral *= smoothstep(0.30, 0.60, (lmx - lmn) / (lmx + 0.02));
+            blk += (sub_at((int)floor(r.x * 3.0), p.y) - dot(blk, float3(0.2126, 0.7152, 0.0722))) * neutral;
         }
         return float4(max(blk, 0.0), 1.0);
     }
@@ -220,7 +223,11 @@ float4 ps_main(VSOut i) : SV_Target
             // reconstruction; coloured content keeps the normal filter.
             float g = clamp(cleartype_gray(r), lmn, lmx);
             float neutral = 1.0 - smoothstep(0.08, 0.25, max(sat3(cmn), sat3(cmx)));
-            c.rgb = lerp(c.rgb, g.xxx, neutral);
+            // Only at real edges (text), and shift brightness rather than replace
+            // the colour, so muted photo/video content keeps its hue.
+            neutral *= conf;
+            float cl0 = dot(c.rgb, float3(0.2126, 0.7152, 0.0722));
+            c.rgb += (g - cl0) * neutral;
         }
         if (smode != 3)
         {
