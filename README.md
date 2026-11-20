@@ -32,18 +32,20 @@ Get-FileHash .\pixelzoom-<version>-windows-x64.zip -Algorithm SHA256
 - Start with Windows.
 - Snap to whole zoom levels: scrolling stops on exact 2x, 3x, 4x… (on by default). Turn it off for smooth, unstopped steps.
 - BGR display: turn on if your panel's sub-pixels run blue-green-red (rare). It fixes ClearType text sharpening on those panels.
+- Clean up text colour fringes (on by default): shows the orange and blue edges of zoomed ClearType text as the grey detail they encode. Turn it off for the previous rendering, for example if a muted text colour looks too grey.
 - Shortcut recorder: click a key box or Record, hold a key and scroll up or down, then release. The direction you record zooms in; the other zooms out. A key is required; Clear wipes it and listens again.
 - Screen picker, shown when several monitors are connected.
 - Settings are stored in `%APPDATA%\pixelzoom\config.ini`.
 
 ## How it works
 
-The screen is captured with desktop duplication and scaled on the GPU with Lanczos3 filtering and ClearType-aware adaptive sharpening, so text stays crisp. Zoom levels stick to whole ratios (2x, 3x, 4x…) as you scroll, where every screen pixel becomes an exact block with no filtering; one more notch moves off it. HDR content is passed through unchanged. When you are not zooming, the idle cost is effectively zero.
+The screen is captured with desktop duplication and scaled on the GPU with Lanczos3 filtering and ClearType-aware adaptive sharpening, so text stays crisp. Zoom levels stick to whole ratios (2x, 3x, 4x…) as you scroll, where every screen pixel becomes an exact block with no filtering; one more notch moves off it. On grey ClearType text, at every zoom level, the orange and blue sub-pixel fringes are shown as the extra grey detail they encode instead of as colour, so whole ratios are exact blocks except on those text edges. Coloured text, highlights, photos and video keep their colours. HDR content is passed through unchanged. When you are not zooming, the idle cost is effectively zero.
 
 ## Known limitations
 
 - While enabled, the chosen modifier + scroll is swallowed in other apps, which breaks their own Ctrl+scroll zoom (browsers, editors). Pick another modifier or disable Pixel Zoom.
 - ClearType sharpening assumes RGB-order sub-pixels, the Windows default. Use the BGR display setting for the rare BGR panel.
+- Telling ClearType fringes from real colour is a local guess. Muted text colours in thin fonts (brown, slate, warm grey) can lose part of their tint, two complementary 1 px lines side by side (orange beside blue) can be shown grey as they look exactly like a fringed black stroke, and some thin stems keep their fringes. Turn off "Clean up text colour fringes" in Settings if this bothers you.
 - Protected content and exclusive-fullscreen applications cannot be captured.
 - The executable is unsigned (see SmartScreen above).
 

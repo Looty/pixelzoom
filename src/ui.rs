@@ -117,15 +117,19 @@ impl R {
     }
 }
 
+// Five 40 px toggle rows fill the card, so the window keeps its height.
 const CARD: R = R::new(24.0, 76.0, 392.0, 200.0);
-const ROW1: R = R::new(24.0, 76.0, 392.0, 50.0);
-const ROW2: R = R::new(24.0, 126.0, 392.0, 50.0);
-const ROW3: R = R::new(24.0, 176.0, 392.0, 50.0);
-const ROW4: R = R::new(24.0, 226.0, 392.0, 50.0);
-const SWITCH1: R = R::new(360.0, 89.0, 44.0, 24.0);
-const SWITCH2: R = R::new(360.0, 139.0, 44.0, 24.0);
-const SWITCH3: R = R::new(360.0, 189.0, 44.0, 24.0);
-const SWITCH4: R = R::new(360.0, 239.0, 44.0, 24.0);
+const ROW_H: f32 = 40.0;
+const ROW1: R = R::new(24.0, 76.0, 392.0, ROW_H);
+const ROW2: R = R::new(24.0, 116.0, 392.0, ROW_H);
+const ROW3: R = R::new(24.0, 156.0, 392.0, ROW_H);
+const ROW4: R = R::new(24.0, 196.0, 392.0, ROW_H);
+const ROW5: R = R::new(24.0, 236.0, 392.0, ROW_H);
+const SWITCH1: R = R::new(360.0, 84.0, 44.0, 24.0);
+const SWITCH2: R = R::new(360.0, 124.0, 44.0, 24.0);
+const SWITCH3: R = R::new(360.0, 164.0, 44.0, 24.0);
+const SWITCH4: R = R::new(360.0, 204.0, 44.0, 24.0);
+const SWITCH5: R = R::new(360.0, 244.0, 44.0, 24.0);
 const BTN_RECORD: R = R::new(24.0, 396.0, 110.0, 36.0);
 const BTN_CLEAR: R = R::new(144.0, 396.0, 90.0, 36.0);
 
@@ -142,6 +146,7 @@ enum Hit {
     Autostart,
     SnapZoom,
     BgrPanel,
+    TextCleanup,
     Chip,
     Record,
     Clear,
@@ -162,6 +167,8 @@ fn hit_test(x: f32, y: f32, monitor_count: usize) -> Option<Hit> {
         Some(Hit::SnapZoom)
     } else if ROW4.contains(x, y) {
         Some(Hit::BgrPanel)
+    } else if ROW5.contains(x, y) {
+        Some(Hit::TextCleanup)
     } else if (0..MAX_COMBO_KEYS).any(|i| chip_rect(i).contains(x, y)) {
         Some(Hit::Chip)
     } else if BTN_RECORD.contains(x, y) {
@@ -369,18 +376,21 @@ impl Ui {
         self.stroke(&CARD.inset(0.5).rounded(10.0), t.border, 1.0);
         unsafe {
             self.brush.SetColor(&color(t.border, 1.0));
-            for y in [126.0, 176.0, 226.0] {
-                self.rt.FillRectangle(&R::new(40.0, y, 360.0, 1.0).d2d(), &self.brush);
+            for r in [ROW2, ROW3, ROW4, ROW5] {
+                self.rt.FillRectangle(&R::new(40.0, r.y, 360.0, 1.0).d2d(), &self.brush);
             }
         }
-        self.text("Enable pixelzoom", &self.body, R::new(40.0, 76.0, 300.0, 50.0), t.text);
-        self.text("Start with Windows", &self.body, R::new(40.0, 126.0, 300.0, 50.0), t.text);
-        self.text("Snap to whole zoom levels", &self.body, R::new(40.0, 176.0, 300.0, 50.0), t.text);
-        self.text("BGR display (sub-pixel order)", &self.body, R::new(40.0, 226.0, 300.0, 50.0), t.text);
+        let label = |row: R| R::new(40.0, row.y, 300.0, ROW_H);
+        self.text("Enable pixelzoom", &self.body, label(ROW1), t.text);
+        self.text("Start with Windows", &self.body, label(ROW2), t.text);
+        self.text("Snap to whole zoom levels", &self.body, label(ROW3), t.text);
+        self.text("BGR display (sub-pixel order)", &self.body, label(ROW4), t.text);
+        self.text("Clean up text colour fringes", &self.body, label(ROW5), t.text);
         self.switch(SWITCH1, ENABLED.load(Relaxed), self.hover == Some(Hit::Enable));
         self.switch(SWITCH2, self.autostart, self.hover == Some(Hit::Autostart));
         self.switch(SWITCH3, SNAP_ZOOM.load(Relaxed), self.hover == Some(Hit::SnapZoom));
         self.switch(SWITCH4, BGR_PANEL.load(Relaxed), self.hover == Some(Hit::BgrPanel));
+        self.switch(SWITCH5, TEXT_CLEANUP.load(Relaxed), self.hover == Some(Hit::TextCleanup));
 
         // Shortcut recorder.
         self.text("Zoom shortcut", &self.body, R::new(24.0, 288.0, 392.0, 24.0), t.text);
@@ -731,6 +741,10 @@ unsafe extern "system" fn proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPA
                         BGR_PANEL.store(!BGR_PANEL.load(Relaxed), Relaxed);
                         save();
                     }
+                    Some(Hit::TextCleanup) => {
+                        TEXT_CLEANUP.store(!TEXT_CLEANUP.load(Relaxed), Relaxed);
+                        save();
+                    }
                     Some(Hit::Chip) | Some(Hit::Record) => start_listening(hwnd),
                     Some(Hit::Clear) => {
                         set_combo(&[]);
@@ -820,10 +834,12 @@ mod tests {
 
     #[test]
     fn hit_testing_finds_controls() {
-        assert!(matches!(hit_test(100.0, 100.0, 1), Some(Hit::Enable)));
-        assert!(matches!(hit_test(100.0, 150.0, 1), Some(Hit::Autostart)));
-        assert!(matches!(hit_test(100.0, 200.0, 1), Some(Hit::SnapZoom)));
-        assert!(matches!(hit_test(100.0, 250.0, 1), Some(Hit::BgrPanel)));
+        assert!(matches!(hit_test(100.0, 96.0, 1), Some(Hit::Enable)));
+        assert!(matches!(hit_test(100.0, 136.0, 1), Some(Hit::Autostart)));
+        assert!(matches!(hit_test(100.0, 176.0, 1), Some(Hit::SnapZoom)));
+        assert!(matches!(hit_test(100.0, 216.0, 1), Some(Hit::BgrPanel)));
+        assert!(matches!(hit_test(100.0, 256.0, 1), Some(Hit::TextCleanup)));
+        assert!(hit_test(100.0, 280.0, 1).is_none()); // below the card, above the shortcut
         assert!(matches!(hit_test(chip_rect(0).x + 5.0, chip_rect(0).y + 5.0, 1), Some(Hit::Chip)));
         assert!(matches!(hit_test(BTN_RECORD.x + 5.0, BTN_RECORD.y + 5.0, 1), Some(Hit::Record)));
         assert!(matches!(hit_test(BTN_CLEAR.x + 5.0, BTN_CLEAR.y + 5.0, 1), Some(Hit::Clear)));

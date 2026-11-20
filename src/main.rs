@@ -78,7 +78,9 @@ struct CB {
     mode: u32,
     sharpen: f32,
     smode: u32,
-    /// Bit 0: BGR sub-pixel order. Padded to a whole 16-byte constant-buffer row.
+    /// Bit 0: BGR sub-pixel order. Bit 1: ClearType text clean-up off (the
+    /// v0.2.1 look). Bit 2: HDR capture (linear scRGB).
+    /// Padded to a whole 16-byte constant-buffer row.
     flags: u32,
     _pad: [u32; 3],
 }
@@ -492,7 +494,7 @@ fn draw(g: &Gfx, cap: &Capture, zoom: f32, probe: bool) -> windows::core::Result
             mode: FILTER.load(Ordering::Relaxed),
             sharpen: getf(&STRENGTH),
             smode: SHARPEN.load(Ordering::Relaxed),
-            flags: BGR_PANEL.load(Ordering::Relaxed) as u32,
+            flags: BGR_PANEL.load(Ordering::Relaxed) as u32 | (!TEXT_CLEANUP.load(Ordering::Relaxed) as u32) << 1 | (g.hdr as u32) << 2,
             _pad: [0; 3],
         };
         g.ctx.UpdateSubresource(&g.cb, 0, None, &cb as *const _ as *const _, 0, 0);
