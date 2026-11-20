@@ -30,6 +30,8 @@ pub static ENABLED: AtomicBool = AtomicBool::new(true);
 pub static SNAP_ZOOM: AtomicBool = AtomicBool::new(true);
 /// Panel sub-pixels run B,G,R left to right instead of the usual R,G,B.
 pub static BGR_PANEL: AtomicBool = AtomicBool::new(false);
+/// Show grey ClearType text's orange/blue edge fringes as grey detail.
+pub static TEXT_CLEANUP: AtomicBool = AtomicBool::new(true);
 
 pub fn getf(a: &AtomicU32) -> f32 {
     f32::from_bits(a.load(Relaxed))
@@ -107,6 +109,7 @@ pub struct Parsed {
     pub monitor: Option<String>,
     pub snap_zoom: Option<bool>,
     pub bgr_panel: Option<bool>,
+    pub text_cleanup: Option<bool>,
 }
 
 pub fn parse_config(text: &str) -> Parsed {
@@ -129,17 +132,18 @@ pub fn parse_config(text: &str) -> Parsed {
             "monitor" => p.monitor = Some(v.to_string()),
             "snap_zoom" => p.snap_zoom = Some(v != "0"),
             "bgr_panel" => p.bgr_panel = Some(v != "0"),
+            "text_cleanup" => p.text_cleanup = Some(v != "0"),
             _ => {}
         }
     }
     p
 }
 
-pub fn format_config(shortcut: &[u32], enabled: bool, monitor: &str, snap_zoom: bool, bgr_panel: bool) -> String {
+pub fn format_config(shortcut: &[u32], enabled: bool, monitor: &str, snap_zoom: bool, bgr_panel: bool, text_cleanup: bool) -> String {
     let shortcut = shortcut.iter().map(|v| vk_label(*v)).collect::<Vec<_>>().join("+");
     format!(
-        "shortcut={shortcut}\nenabled={}\nmonitor={monitor}\nsnap_zoom={}\nbgr_panel={}\n",
-        enabled as u8, snap_zoom as u8, bgr_panel as u8
+        "shortcut={shortcut}\nenabled={}\nmonitor={monitor}\nsnap_zoom={}\nbgr_panel={}\ntext_cleanup={}\n",
+        enabled as u8, snap_zoom as u8, bgr_panel as u8, text_cleanup as u8
     )
 }
 
@@ -188,6 +192,9 @@ pub fn load() {
     if let Some(on) = p.bgr_panel {
         BGR_PANEL.store(on, Relaxed);
     }
+    if let Some(on) = p.text_cleanup {
+        TEXT_CLEANUP.store(on, Relaxed);
+    }
 }
 
 pub fn save() {
@@ -195,7 +202,14 @@ pub fn save() {
     if let Some(dir) = path.parent() {
         let _ = fs::create_dir_all(dir);
     }
-    let text = format_config(&combo(), ENABLED.load(Relaxed), &monitor_id(), SNAP_ZOOM.load(Relaxed), BGR_PANEL.load(Relaxed));
+    let text = format_config(
+        &combo(),
+        ENABLED.load(Relaxed),
+        &monitor_id(),
+        SNAP_ZOOM.load(Relaxed),
+        BGR_PANEL.load(Relaxed),
+        TEXT_CLEANUP.load(Relaxed),
+    );
     let _ = fs::write(path, text);
 }
 
@@ -270,19 +284,20 @@ mod tests {
 
     #[test]
     fn config_round_trips() {
-        let text = format_config(&[K_CONTROL, K_WHEEL_DOWN], false, r"\\.\DISPLAY2", false, true);
+        let text = format_config(&[K_CONTROL, K_WHEEL_DOWN], false, r"\\.\DISPLAY2", false, true, false);
         let p = parse_config(&text);
         assert_eq!(p.shortcut, Some(vec![K_CONTROL, K_WHEEL_DOWN]));
         assert_eq!(p.enabled, Some(false));
         assert_eq!(p.monitor.as_deref(), Some(r"\\.\DISPLAY2"));
         assert_eq!(p.snap_zoom, Some(false));
         assert_eq!(p.bgr_panel, Some(true));
+        assert_eq!(p.text_cleanup, Some(false));
     }
 
     #[test]
     fn old_config_without_the_new_keys_keeps_defaults() {
         let p = parse_config("shortcut=Ctrl+Scroll ↑\nenabled=1\n");
-        assert_eq!((p.snap_zoom, p.bgr_panel), (None, None));
+        assert_eq!((p.snap_zoom, p.bgr_panel, p.text_cleanup), (None, None, None));
     }
 
     #[test]
@@ -299,7 +314,7 @@ mod tests {
 
     #[test]
     fn empty_monitor_means_primary() {
-        let p = parse_config(&format_config(&[K_CONTROL], true, "", true, false));
+        let p = parse_config(&format_config(&[K_CONTROL], true, "", true, false, true));
         assert_eq!(p.monitor.as_deref(), Some(""));
     }
 
